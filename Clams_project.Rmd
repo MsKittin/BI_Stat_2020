@@ -1,0 +1,454 @@
+---
+title: "Clams project"
+date: "26/10/2020"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    number_section: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r message=FALSE, include=FALSE}
+# Let's start by importing the packages that are needed to further data analysis. 
+# Here is a code below which the user can use to check if the required packages are installed on his computer.
+
+packages <- c("dplyr", "readr", "ggplot2", "Hmisc", "cowplot", "gclus", "car", "corrplot")
+packages_to_be_installed <- c()
+
+check_for_installed_packages <- function(packages_vector){
+  for (package in packages){
+    if (package %in% rownames(installed.packages()) == FALSE){
+      packages_to_be_installed <- append(packages_to_be_installed, package)
+    }
+  }
+  if (length(packages_to_be_installed) == 0){
+    print("You already have all neccessary packages")
+  } else {
+    cat("You may need to install these packages:", packages_to_be_installed)
+  }
+}
+
+check_for_installed_packages(packages)
+```
+
+```{r message=FALSE, include=FALSE}
+# If the user agrees to install the packages he does not have, this function will help with the installation.
+install_nessesary <- function(packages_vector){
+  for (package in packages_to_be_installed){
+    install.packages(package)
+  }
+}
+
+install_nessesary(packages_to_be_installed)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(Hmisc)
+library(cowplot)
+library(corrplot)
+library(psych)
+library(gclus)
+library(car)
+theme_set(theme_bw())
+```
+
+# Collecting data into a dataset
+Here is a function for collecting all .csv files into one dataframe. The user needs to specify the absolute path to the folder with .csv files in the "path" variable.
+
+```{r message=FALSE}
+path = "/home/misskittin/stat project/Data/"
+
+merge_data <- function(path) {
+  all_files <- list.files(path, pattern = "*.csv", full.names = TRUE) # Identify all csv files in folder
+  listed_files <- lapply(all_files, read_csv) # Store all files in list
+  dataset <- lapply(listed_files, rbind)  # Combine data sets into one data set 
+  do.call(rbind.data.frame, dataset) # Convert list to data frame
+}
+```
+
+```{r message=FALSE, include=FALSE}
+# Let's save the dataframe to the clams variable:
+clams <- merge_data(path)
+```
+
+# EDA
+## Preparing data for analysis
+
+First of all, let's look at the data: number of observations (rows) and variables (columns), and a head of the first cases.
+
+```{r echo=FALSE, message=FALSE}
+glimpse(clams)
+```
+
+We see that dataframe consists of 4177 observations and 9 variables, three of which have an inappropriate data type (chr). I wrote a function which can show what is wrong with the observations in these columns. Let`s take a look.
+
+```{r echo=FALSE, message=FALSE}
+check_for_strange_data <- function(data){
+  for (column in 1:ncol(data)){
+    column_vector_char <- as.character(data[[column]])
+    cat(colnames(data[column]), ":", data[[column]][is.na(suppressWarnings(as.numeric(column_vector_char)))], '\n')
+  }
+}
+
+check_for_strange_data(clams)
+```
+
+Above we can see all inappropriate values such as text that should be numeric. Some of these values can be restored, for example, the value in the Rings column, and some must be reassigned to NA.
+
+I found an inappropriate value in the Rings column and changed it. Also the type of the variable was changed to numeric.
+
+With this manual approach, we can catch some values, for example, numbers written in text and restore them. This is a long approach. There is also another, automated approach where we can assign the NA value to all values that could not be converted to numbers. I decided not to use this approach and restored the incorrect value.
+
+```{r message=FALSE, include=FALSE}
+invalid_rings_row <- which(clams$Rings == "nine")
+clams[invalid_rings_row, 1] <- "9"
+clams$Rings <- as.numeric(as.character(clams$Rings)) 
+```
+
+Inappropriate value in Length column was replaced with NA, variable type was changed to numeric. I also converted Sex column to factor and gave it a more convenient name.
+
+```{r message=FALSE, include=FALSE, results="hide"}
+# Now Length column. Replace the missing value with "NA", change the variable type to numeric.
+invalid_length_row <- which(clams$Length == "No data! I forgot to mesure it!(") 
+clams[invalid_length_row, 3] <- NA 
+clams$Length <- as.numeric(as.character(clams$Length))
+```
+
+```{r message=FALSE, include=FALSE}
+# For further convenience, it is better to rename second column and also type of this column must be changed to factor.
+clams$`Sex (1 – male, 2 – female, 3 – uvenil)` <- factor(clams$`Sex (1 – male, 2 – female, 3 – uvenil)`, levels = c("1", "2", "3", "one", "two", "three", "male" , "female", "uvenil"), labels = c("1", "2", "3", "1", "2", "3", "1", "2", "3"))
+colnames(clams)[2] <- "Sex"
+```
+
+```{r message=FALSE, include=FALSE}
+# It's time to make sure that everything is fine with the data now.
+glimpse(clams)
+```
+
+## Missing Data
+
+Let's explore data for missing values and find out in which columns they are located.
+
+```{r echo=FALSE, message=FALSE}
+cat('Number of missing values: ', sum(is.na(clams)))
+colSums(is.na(clams)) 
+```
+
+There are 21 missing values in this dataframe and there are different options for how to deal with missing values. You can build a regression model and try to predict them from other values. Also, the missing value can be replaced with something, for example, with mean if distribution of the value is normal. It can be replaced with mode or median, but all these methods move us away from our real data and make the interpretation of analyzes results more difficult.
+
+Based on the fact that we have a large number of observations and the number of missing values is only 0.5% of them, I will not try to predict them, and simply omit all rows with NA.
+
+```{r message=FALSE, include=FALSE}
+clams <- na.omit(clams)
+```
+
+## Visual exploration
+### Outliers in the data
+
+To identify outliers, I used boxplot diagrams, dividing our data into 3 samples depending on the sex of the individuals.
+
+Figure 1.
+
+```{r echo=FALSE, message=FALSE}
+cl_sex <- c(`1` = "male", `2` = "female", `3` = "juvenile")
+outliers_title <- ggdraw() + draw_label("Outliers in the data", fontface='bold')
+
+box_rings <- ggplot(clams, aes(Rings, fill = Sex)) + geom_boxplot() + facet_grid(.~Sex, labeller = as_labeller(cl_sex)) + theme_bw() + coord_flip() + scale_fill_brewer(palette = "Dark2") + theme(legend.position="none", text = element_text(size = 12), strip.text.x = element_text(size = 12)) # Rings
+box_length <- ggplot(clams, aes(Length, fill = Sex)) + geom_boxplot() + facet_grid(.~Sex, labeller = as_labeller(cl_sex)) + theme_bw() + coord_flip() + scale_fill_brewer(palette = "Dark2") + theme(legend.position="none", text = element_text(size = 12), strip.text.x = element_text(size = 12)) # Length
+box_diam <- ggplot(clams, aes(Diameter, fill = Sex)) + geom_boxplot() + facet_grid(.~Sex, labeller = as_labeller(cl_sex)) + theme_bw() + coord_flip() + scale_fill_brewer(palette = "Dark2") + theme(legend.position="none", text = element_text(size = 12), strip.text.x = element_text(size = 12)) # Diameter
+box_height <- ggplot(clams, aes(Height, fill = Sex)) + geom_boxplot() + facet_grid(.~Sex, labeller = as_labeller(cl_sex))  + theme_bw() + coord_flip() + scale_fill_brewer(palette = "Dark2") + theme(legend.position="none", text = element_text(size = 12), strip.text.x = element_text(size = 12)) # Height
+box_together <- plot_grid(box_rings, box_length, box_diam, box_height, labels=c('A', 'B', 'C', 'D'))
+plot_grid(outliers_title, ncol=1, rel_heights=c(0.1, 1), box_together)
+
+box_wh_w <-ggplot(clams, aes(Whole_weight, fill = Sex)) + geom_boxplot() + facet_grid(.~Sex, labeller = as_labeller(cl_sex)) + theme_bw() + coord_flip() + scale_fill_brewer(palette = "Dark2") + theme(legend.position="none", text = element_text(size = 12), strip.text.x = element_text(size = 12)) # Whole weight
+box_shuck_w <- ggplot(clams, aes(Shucked_weight, fill = Sex)) + geom_boxplot() + facet_grid(.~Sex, labeller = as_labeller(cl_sex)) + theme_bw() + coord_flip() + scale_fill_brewer(palette = "Dark2") + theme(legend.position="none", text = element_text(size = 12), strip.text.x = element_text(size = 12)) # Shucked weight
+box_vis_w <- ggplot(clams, aes(Viscera_weight, fill = Sex)) + geom_boxplot() + facet_grid(.~Sex, labeller = as_labeller(cl_sex)) + theme_bw() + coord_flip() + scale_fill_brewer(palette = "Dark2") + theme(legend.position="none", text = element_text(size = 12), strip.text.x = element_text(size = 12)) # Viscera weight
+box_shell_w <- ggplot(clams, aes(Shell_weight, fill = Sex)) + geom_boxplot() + facet_grid(.~Sex, labeller = as_labeller(cl_sex)) + theme_bw() + coord_flip() + scale_fill_brewer(palette = "Dark2") + theme(legend.position="none", text = element_text(size = 12), strip.text.x = element_text(size = 12)) # Shell weight
+plot_grid(box_wh_w, box_shuck_w, box_vis_w, box_shell_w, labels=c('E', 'F', 'G', 'H'))
+```
+
+Number of outliers in different variables:
+
+```{r echo=FALSE, message=FALSE, collapse=TRUE}
+cat("Number of outliers in Rings variable:", length(boxplot.stats(clams$Rings)$out))
+cat("Number of outliers in Length variable:", length(boxplot.stats(clams$Length)$out))
+cat("Number of outliers in Diameter variable:", length(boxplot.stats(clams$Diameter)$out))
+cat("Number of outliers in Height variable:", length(boxplot.stats(clams$Height)$out))
+cat("Number of outliers in Whole_weight variable:", length(boxplot.stats(clams$Whole_weight)$out))
+cat("Number of outliers in Shucked_weight variable:", length(boxplot.stats(clams$Shucked_weight)$out))
+cat("Number of outliers in Viscera_weight variable:", length(boxplot.stats(clams$Viscera_weight)$out))
+cat("Number of outliers in Shell_weight variable:", length(boxplot.stats(clams$Shell_weight)$out))
+```
+
+As we can see, there are outliers in the data, but will they strongly affect the results of statistical calculations? We will find out about this in the following paragraphs, some calculations will be presented in two versions - including outliers and without outliers.
+
+```{r message=FALSE, include=FALSE}
+# To do this, we define a function that determines the outliers
+is_outlier <- function(x) {
+  return(x < quantile(x, 0.25) - 1.5 * IQR(x) | x > quantile(x, 0.75) + 1.5 * IQR(x))
+}
+
+# Create a copy of the dataframe where all outliers are removed
+clams_no_outliers <- clams %>% group_by(Sex) %>% mutate(outlier = is_outlier(Rings)) %>% 
+  filter(outlier == FALSE) %>% mutate(outlier = is_outlier(Length)) %>% filter(outlier == FALSE) %>% 
+    mutate(outlier = is_outlier(Diameter)) %>% filter(outlier == FALSE) %>% 
+      mutate(outlier = is_outlier(Height)) %>% filter(outlier == FALSE) %>% 
+        mutate(outlier = is_outlier(Whole_weight)) %>% filter(outlier == FALSE) %>% 
+          mutate(outlier = is_outlier(Shucked_weight)) %>% filter(outlier == FALSE) %>% 
+            mutate(outlier = is_outlier(Viscera_weight)) %>% filter(outlier == FALSE) %>% 
+               mutate(outlier = is_outlier(Shell_weight)) %>% filter(outlier == FALSE)
+
+
+clams_no_outliers$outlier <- NULL 
+```
+
+At this stage, let's visualize the distribution in the data, we will need this information further when it will be necessary to determine the applicability of a particular statistical method.
+
+### Distribution
+
+The distribution of the Rings variable is asymmetric, but close to normal. The Height distribution is also normal if we exclude the outliers that we identified in Figure 1D. We see left-skewed distribution of Lenght variable and also left tail of the distribution considerably longer in Diameter variable. The shape of distribution of Whole weight, Shucked weight, Viscera weight and Shell weight variables is non-symmetric (chi-squared).
+
+Figure 2.
+
+```{r echo=FALSE, message=FALSE}
+distrib_title <- ggdraw() + draw_label("Distribution of clams variables", fontface='bold')
+
+p_rings <- ggplot(clams, aes(Rings)) + geom_histogram(aes(y =..density..), colour = "black", fill = "purple3") + theme_bw() + theme(text = element_text(size = 12)) + stat_function(fun = dnorm, args = list(mean = mean(clams$Rings), sd = sd(clams$Rings)), color = "tomato3", size = 1)
+p_lenght <- ggplot(clams, aes(Length)) + geom_histogram(aes(y =..density..), colour = "black", fill = "purple3") + theme_bw() + theme(text = element_text(size = 12)) + stat_function(fun = dnorm, args = list(mean = mean(clams$Length), sd = sd(clams$Length)), color = "tomato3", size = 1)
+p_diameter <- ggplot(clams, aes(Diameter)) + geom_histogram(aes(y =..density..), colour = "black", fill = "purple3") + theme_bw() + theme(text = element_text(size = 12)) + stat_function(fun = dnorm, args = list(mean = mean(clams$Diameter), sd = sd(clams$Diameter)), color = "tomato3", size = 1)
+p_height <- ggplot(clams, aes(Height)) + geom_histogram(aes(y =..density..), colour = "black", fill = "purple3") + theme_bw() + theme(text = element_text(size = 12)) + stat_function(fun = dnorm, args = list(mean = mean(clams$Height), sd = sd(clams$Height)), color = "tomato3", size = 1)
+p_together <- plot_grid(p_rings, p_lenght, p_diameter, p_height, labels=c('A', 'B', 'C', 'D'))
+plot_grid(distrib_title, ncol=1, rel_heights=c(0.1, 1), p_together) # all together
+
+p_wh_weight <- ggplot(clams, aes(Whole_weight)) + geom_histogram(aes(y =..density..), colour = "black", fill = "purple3") + theme(text = element_text(size = 12)) + theme_bw() + stat_function(fun = dnorm, args = list(mean = mean(clams$Whole_weight), sd = sd(clams$Whole_weight)), color = "tomato3", size = 1)
+p_shuck_weight <- ggplot(clams, aes(Shucked_weight)) + geom_histogram(aes(y =..density..), colour = "black", fill = "purple3") + theme(text = element_text(size = 12)) + theme_bw() + stat_function(fun = dnorm, args = list(mean = mean(clams$Shucked_weight), sd = sd(clams$Shucked_weight)), color = "tomato3", size = 1)
+p_vis_weight <- ggplot(clams, aes(Viscera_weight)) + geom_histogram(aes(y =..density..), colour = "black", fill = "purple3") + theme(text = element_text(size = 12)) + theme_bw() + stat_function(fun = dnorm, args = list(mean = mean(clams$Viscera_weight), sd = sd(clams$Viscera_weight)), color = "tomato3", size = 1)
+p_shell_weight <- ggplot(clams, aes(Shell_weight)) + geom_histogram(aes(y =..density..), colour = "black", fill = "purple3") + theme(text = element_text(size = 12)) + theme_bw() + stat_function(fun = dnorm, args = list(mean = mean(clams$Shell_weight), sd = sd(clams$Shell_weight)), color = "tomato3", size = 1)
+plot_grid(p_wh_weight, p_shuck_weight, p_vis_weight, p_shell_weight, labels=c('E', 'F', 'G', 'H')) # together
+```
+
+### Assessing the correlation between variables
+Based on the fact that the distribution of some variables differs from normal and there are outliers in the data, I use Spearman's method to construct the correlation matrix.
+
+Figure 3.
+
+```{r echo=FALSE, message=FALSE}
+clams_count <- clams %>% select(-c("Sex")) 
+corr_data_clams <- cor(clams_count, method = 'spearman') 
+corrplot(corr_data_clams, method = "number", title = "Correlation matrix of clams variables", mar = c(0, 0, 1, 0))
+```
+
+Based on this matrix, it can be noted that the number of rings shows very low correlation with other variables. The length of the clam is highly correlated with the diameter and weight, which is logical, and slightly less with the height of the clam. There is a correlation between the diameter of the clam and the height and weight. And there is also a strong correlation between weight variables.
+
+# Mean and standard deviation of the Length variable for clams of different sexes
+Mean length is 0.56±0.10 for male clams, 0.58±0.09 for female clams and 0.43±0.11 for juvenile clams based on data with outliers. Based on data without outliers mean length is 0.57±0.08 for male clams, 0.58±0.08 for female clams and 0.42±0.10 for juvenile clams. Outliers did not affect the results.
+
+With outliers:
+```{r echo=FALSE, message=FALSE}
+clams %>% group_by(Sex) %>% summarise(mean = mean(Length), sd = sd(Length))
+
+```
+
+Without outliers:
+```{r echo=FALSE, message=FALSE}
+clams_no_outliers %>% group_by(Sex) %>% summarise(mean = mean(Length), sd = sd(Length))
+```
+
+# What percentage of clams has Height less than or equal to 0.165?
+Based on data with outliers 75.8% of clams has height less than or equal to 0.165, and based on data without outliers they accounted for a larger percentage — 79.1%. The answers vary because there are two strong outliers in the Height variable with 0.515 and 1.130 values.
+
+With outliers:
+```{r echo=FALSE, message=FALSE}
+height_0_165_wo <- filter(clams, Height <= 0.165) 
+nrow(height_0_165_wo) / nrow(clams) * 100
+```
+
+Without outliers:
+```{r echo=FALSE, message=FALSE}
+height_0_165_no <- filter(clams_no_outliers, Height <= 0.165) 
+nrow(height_0_165_no) / nrow(clams_no_outliers) * 100
+```
+
+# The value of the Length, which is greater than 92% of all observations
+The value of the Length variable, which is greater than 92% of all observations is equal to 0.67.
+
+```{r echo=FALSE, message=FALSE}
+quantile(clams$Length, probs = c(0.92))
+```
+
+# Length variable standartization
+
+The values of the Length variable after standardization are saved in the Lenght_z_scores variable.
+
+```{r message=FALSE}
+Lenght_z_scores <- (clams$Length - mean(clams$Length)) / sd(clams$Length)
+```
+
+First 12 values:
+```{r echo=FALSE, message=FALSE}
+head(Lenght_z_scores, n = 12)
+cat("Mean of Lenght_z_scores:", mean(Lenght_z_scores), "\n", "Standart deviation of Lenght_z_scores:", sd(Lenght_z_scores))
+```
+
+# Compare the diameter of the clams with 5 and 15 rings
+
+```{r message=FALSE, include=FALSE}
+# Let's create subsets of clams with 5 and 15 rings
+rings_5 <- filter(clams, Rings == 5)
+rings_15 <- filter(clams, Rings == 15)
+```
+
+The distribution of the diameter variable in 5-rings and 15-rings clams is close to normal, so the Student's t-test is applicable. 
+
+Figure 4.
+
+```{r echo=FALSE, message=FALSE}
+qqPlot(rings_5$Diameter, main = "Diameter distribution of 5-rings clams", xlab = "expected quantiles", ylab = "obtained quantiles")
+```
+Figure 5.
+
+```{r echo=FALSE, message=FALSE}
+qqPlot(rings_15$Diameter, main = "Diameter distribution of 15-rings clams", xlab = "expected quantiles", ylab = "obtained quantiles")
+```
+
+The p-value allows to reject the null hypothesis that the mean diameters of clams with 5 and 15 rings are equal. The mean diameter of the 5-rings clams is 0.21 and the mean diameter of the 15-rings clams is 0.46, the differences are statistically significant.
+
+```{r echo=FALSE, message=FALSE}
+t.test(rings_5$Diameter, rings_15$Diameter)
+```
+
+Figure 6.
+
+```{r echo=FALSE, message=FALSE}
+rings_5_15 <- clams %>% filter(Rings == 5 | Rings == 15)
+
+ggplot(rings_5_15, aes(y = Diameter, x = as.factor(Rings), fill = as.factor(Rings))) + geom_boxplot() + scale_fill_brewer(palette = "Dark2") + xlab("Rings") + labs(title="Diameter of 5-rings and 15-rings clams", fill = "Rings") + theme_bw() + theme(plot.title = element_text(face = "bold", hjust = 0.5))
+```
+
+# Diameter and Whole weight correlation assessment
+
+For correlation analysis, it is necessary to check the variables for normal distribution. For this, in addition to the Figures 2C and 2E I build qqPlots.
+
+Figure 7.
+
+```{r echo=FALSE, message=FALSE}
+qqPlot(clams$Diameter, main = "Diameter distribution", xlab = "expected quantiles", ylab = "obtained quantiles")
+```
+Figure 8.
+
+```{r echo=FALSE, message=FALSE}
+qqPlot(clams$Whole_weight, main = "Whole weight distribution", xlab = "expected quantiles", ylab = "obtained quantiles")
+```
+
+The distribution of both variables is far from normal, so I use Spearman's test to calculate the correlation.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+cor.test(clams$Diameter, clams$Whole_weight, method = "spearman")
+```
+There is strong positive correlation between Diameter and Whole weight of clams (rho = 0.97, p-value < 2.2e-16). Let's visualise it. We see the same trend for all sexes.
+
+Figure 9.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(clams, aes(Diameter, Whole_weight, col = Sex)) + geom_point() + theme_bw() + geom_smooth(size = 0.4) + scale_color_brewer(palette = "Dark2", labels = c("male", "female", "juvenile")) + labs(title="Diameter and Whole weight correlation") + theme(plot.title = element_text(face = "bold", hjust = 0.5))
+```
+
+# Additionally
+## Does age affect the diameter differences?
+
+Returning to point 7, we found out that the diameter of clams with 5 and 15 rings is significantly different, but since there are juveniles and adults in the data, it is important to check if the differences found are due to the age of the clams. Therefore, I divided the clams by age and compared their diameters separately.
+
+```{r echo=FALSE, message=FALSE}
+rings_5_uvenil <- clams %>% filter(Sex == 3) %>% filter(Rings == 5)
+rings_5_adult <- clams %>% filter(Sex == 1 | Sex == 2) %>% filter(Rings == 5)
+
+rings_15_uvenil <- clams %>% filter(Sex == 3) %>% filter(Rings == 15)
+rings_15_adult <- clams %>% filter(Sex == 1 | Sex == 2) %>% filter(Rings == 15)
+```
+
+Diameters of juvenile clams with 5 and 15 rings are normally distibuted, so we can apply t.test:
+
+Figure 10.
+
+```{r echo=FALSE, message=FALSE}
+qqPlot(rings_5_uvenil$Diameter, main = "Diameter distribution of juvenile 5-rings clams", xlab = "expected quantiles", ylab = "obtained quantiles")
+```
+
+Figure 11.
+
+```{r echo=FALSE, message=FALSE}
+qqPlot(rings_15_uvenil$Diameter, main = "Diameter distribution of juvenile 15-rings clams", xlab = "expected quantiles", ylab = "obtained quantiles")
+```
+```{r echo=FALSE, message=FALSE}
+t.test(rings_5_uvenil$Diameter, rings_15_uvenil$Diameter)
+```
+
+As a result of comparing the diameters of juvenile clams with 5 and juvenile clams with 15 rings, we see that they differ significantly (0.21 and 0.43 respectively, p-value < 0.05).
+
+The distribution of diameter in adults with 5 rings is not normal, so I used the Mann-Whitney test to compare diameter values.
+
+Figure 12.
+
+```{r echo=FALSE, message=FALSE}
+qqPlot(rings_5_adult$Diameter, main = "Diameter distribution of adult 5-rings clams", xlab = "expected quantiles", ylab = "obtained quantiles")
+```
+
+Figure 13.
+
+```{r echo=FALSE, message=FALSE}
+qqPlot(rings_15_adult$Diameter, main = "Diameter distribution of adult 15-rings clams", xlab = "expected quantiles", ylab = "obtained quantiles")
+```
+
+```{r echo=FALSE, message=FALSE}
+wilcox.test(rings_15_adult$Diameter, rings_5_adult$Diameter)
+```
+
+I compared the diameters of adult clams with 5 rings and adult clams with 15 rings, and we see that their means also differ significantly (p-value < 0.05).
+
+Thus, we see that the differences in diameter are due to the number of rings, and the age of the clams does not affect the detected differences in diameter in any way.
+
+## Something with rings
+I found it interesting that according to the correlation matrix (Figure 3), the number of rings shows a very low correlation with other variables, although the number of rings is a determining indicator of the age of the clam.
+However, in the following figures, we see that the more rings, the greater the value of other variables describing clams.
+
+Figure 14.
+
+```{r echo=FALSE, message=FALSE}
+clams_no_outliers$Age <- ifelse(clams_no_outliers$Sex == 3, "juvenile", "adult")
+
+length_p <- ggplot(clams_no_outliers, aes(y = Length, x = as.factor(Rings), fill = as.factor(Age))) + geom_boxplot() + scale_fill_brewer(palette = "Dark2") + xlab("Rings") + labs(title = "Length of clams of different Rings count", fill = "Age") + theme_bw() + theme(plot.title = element_text(face = "bold", hjust = 0.5))
+diam_p <- ggplot(clams_no_outliers, aes(y = Diameter, x = as.factor(Rings), fill = as.factor(Age))) + geom_boxplot() + scale_fill_brewer(palette = "Dark2") + xlab("Rings") + labs(title = "Diameter of clams of different Rings count", fill = "Age") + theme_bw() + theme(plot.title = element_text(face = "bold", hjust = 0.5))
+plot_grid(length_p, diam_p, nrow = 2,  ncol = 1)
+```
+
+Figure 15.
+
+```{r echo=FALSE, message=FALSE}
+height_p <- ggplot(clams_no_outliers, aes(y = Height, x = as.factor(Rings), fill = as.factor(Age))) + geom_boxplot() + scale_fill_brewer(palette = "Dark2") + xlab("Rings") + labs(title = "Height of clams of different Rings count", fill = "Age") + theme_bw() + theme(plot.title = element_text(face = "bold", hjust = 0.5))
+wh_p <- ggplot(clams_no_outliers, aes(y = Whole_weight, x = as.factor(Rings), fill = as.factor(Age))) + geom_boxplot() + scale_fill_brewer(palette = "Dark2") + xlab("Rings") + labs(title = "Whole weight of clams of different Rings count", fill = "Age") + theme_bw() + theme(plot.title = element_text(face = "bold", hjust = 0.5))
+plot_grid(height_p, wh_p, nrow = 2, ncol = 1)
+```
+
+Figure 16.
+
+```{r echo=FALSE, message=FALSE}
+sh_p <- ggplot(clams_no_outliers, aes(y = Shucked_weight, x = as.factor(Rings), fill = as.factor(Age))) + geom_boxplot() + scale_fill_brewer(palette = "Dark2") + xlab("Rings") + labs(title = "Shucked weight of clams of different Rings count", fill = "Age") + theme_bw() + theme(plot.title = element_text(face = "bold", hjust = 0.5))
+vis_p <- ggplot(clams_no_outliers, aes(y = Viscera_weight, x = as.factor(Rings), fill = as.factor(Age))) + geom_boxplot() + scale_fill_brewer(palette = "Dark2") + xlab("Rings") + labs(title = "Viscera weight of clams of different Rings count", fill = "Age") + theme_bw() + theme(plot.title = element_text(face = "bold", hjust = 0.5))
+plot_grid(sh_p, vis_p, nrow = 2, ncol = 1)
+```
+
+Figure 17.
+
+```{r echo=FALSE, message=FALSE}
+ggplot(clams_no_outliers, aes(y = Shell_weight, x = as.factor(Rings), fill = as.factor(Age))) + geom_boxplot() + scale_fill_brewer(palette = "Dark2") + xlab("Rings") + labs(title = "Shell weight of clams of different Rings count", fill = "Age") + theme_bw() + theme(plot.title = element_text(face = "bold", hjust = 0.5))
+```
+
+There is some tendency that the values of the variables increasing to a certain threshold value of Rings numbers, after which the values reach a plateau. It seems to me that this can explain the low correlation coefficient, since starting from a certain number of rings, the dependence of the variables disappears. That is, when the number of rings is small and their number increases, the values of the variables also increase.
