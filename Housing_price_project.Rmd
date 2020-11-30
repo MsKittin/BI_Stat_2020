@@ -1,0 +1,437 @@
+---
+title: "Housing price project"
+date: "30/11/2020"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    number_section: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+library(MASS)
+library(ggplot2)
+library(car)
+library(gridExtra)
+library(corrplot)
+```
+
+Boston dataset contains information on the value of housing in Boston in the 1970s and 1980s and contains the following variables:
+
+* `crim` - per capita crime rate by town
+* `zn` - proportion of residential land zoned for lots over 25,000 sq.ft
+* `indus` - proportion of non-retail business acres per town
+* `chas` - Charles River dummy variable (= 1 if tract bounds river; 0 otherwise)
+* `nox` - nitrogen oxides concentration (parts per 10 million)
+* `rm` - average number of rooms per dwelling
+* `age` - proportion of owner-occupied units built prior to 1940
+* `dis` - weighted mean of distances to five Boston employment centres
+* `rad` - index of accessibility to radial highways
+* `tax` - full-value property-tax rate per \$10,000
+* `ptratio` - pupil-teacher ratio by town
+* `black` - 1000(Bk - 0.63)^2 where Bk is the proportion of blacks by town
+* `lstat` - lower status of the population (percent)
+* `medv` - median value of owner-occupied homes in \$1000s
+
+# Data preparation
+
+Let's look at the data structure. We see two variables `rad` and `chas` that have type int, but have to be factors.
+```{r echo=FALSE, message=FALSE}
+boston_data <- Boston
+str(boston_data)
+```
+
+We also check if there are missing values in the columns of the dataset. There are none here.
+```{r echo=FALSE, message=FALSE}
+colSums(is.na(boston_data)) 
+```
+
+We have many variables, and they are measured in different quantities, so the coefficients of predictors will be on different scales and cannot be compared directly. Therefore, it is necessary to standardize the data. But as mentioned earlier, the `chas` and `rad` variables are not subject to standardization and should be factors.
+
+```{r echo=FALSE}
+scaled_boston <- as.data.frame(sapply(boston_data, scale))
+scaled_boston$chas <- as.factor(boston_data$chas)
+scaled_boston$rad <- as.factor(boston_data$rad)
+```
+
+Let's estimate the correlation between the predictors. We see that some variables are correlated, and there are also several parameters that are interconnected with `medv`.
+
+*__Figure 1__* 
+
+```{r echo=FALSE, message=FALSE}
+scatterplotMatrix(~ crim + zn + indus + nox + rm + age + dis + tax + ptratio + 
+  black + lstat + medv, regLine = list(col = 2), 
+  col = 1, smooth = list(col.smooth = 4, col.spread = 4), data = scaled_boston)
+```
+
+*__Figure 2__* 
+
+```{r echo=FALSE, message=FALSE}
+corr_boston <- cor(boston_data) 
+corrplot(corr_boston, method = "number", title = "Correlation matrix of Boston variables", mar = c(0, 0, 1, 0))
+```
+
+# Building a linear model
+
+Building a complete linear model with all predictors without interaction:
+```{r message=FALSE}
+full_model <- lm(formula = medv ~ ., data = scaled_boston)
+full_model_summary <- summary(full_model)
+```
+
+Complete linear model characteristics: 
+```{r echo=FALSE, message=FALSE, collapse=TRUE}
+cat('R-squared:', round(full_model_summary$r.squared, 3))
+cat('Adjusted R-squared', round(full_model_summary$adj.r.squared, 3))
+cat('Degrees of freedom:', full_model$df.residual)
+cat('F-statistic:', full_model_summary$fstatistic[[1]])
+```
+
+## Model diagnostics
+
+```{r echo=FALSE}
+full_model_diag <- fortify(full_model)
+```
+
+A rule of thumb influence threshold to determine outliers in the regression model, defined as **__It = 4 / N observations__**. Values above this threshold could be a problem.
+
+Using Cook's distance, we identified a considerable number of influential observations, that exceed threshold.
+
+*__Figure 3__* 
+
+```{r echo=FALSE, message=FALSE}
+threshold = 4 / nrow(scaled_boston)
+
+ggplot(full_model_diag, aes(x = 1:nrow(full_model_diag), y = .cooksd)) + 
+  geom_bar(stat = "identity") + geom_hline(yintercept = threshold, color = "red") +
+  xlab("Row number") + ylab("Cook's distance") + ggtitle("Outliers by Cook's distance") + 
+  theme_bw()
+```
+
+We examined a scatterplot of the residuals to evaluate model. Nonlinearity detected. There are quite a few observations that do not lie in the +/- 2 standard deviation region. Residual plot shows funnel-shaped pattern -- no heteroscedasticity found (dispersion is constant).
+
+*__Figure 4__* 
+
+```{r echo=FALSE}
+gg_resid <- ggplot(data = full_model_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red") +
+  ggtitle("Residual plot for complete model") + 
+  xlab("Fitted value") + ylab("Residual") + theme_bw()
+
+gg_resid
+```
+
+The normality of residuals distribution was checked using the qqPlot. According to the plot, the distribution is close to normal.
+
+*__Figure 5__* 
+
+```{r echo=FALSE, message=FALSE}
+qqPlot(full_model_diag$.stdresid, xlab ="Theoretical Quantiles", 
+       ylab = "Observed Quantiles", main = "Q-Q plot of fitted values", id=FALSE)
+```
+
+One of the assumptions of linear models is that the observations are independent. In our model the Durbin Watson test statistic is 1.09 and the p-value is close to 0 so the hypothesis of no autocorrelation is rejected -- positive autocorrelation was indicated.
+
+```{r echo=FALSE, message=FALSE}
+dwt_result <- durbinWatsonTest(full_model)
+cat("D-W Statistic:", dwt_result$dw)
+```
+
+In general, the diagnostics of the model shows that the complete model is not perfect, and we cannot confidently trust its predictions. The model needs to be improved, we will deal with this later, but for now, let's build the prediction plots.
+
+# Prediction plots
+
+One of the levels of the factor `rad` (`rad24`) has the largest modulus, and if we consider this factor as a whole, then it still has the largest coefficient. We plotted the predictions of home prices for `rad`, but since this is a factor variable, we also plotted one more graph with numerical variable.
+
+*__Figure 6__* 
+
+```{r echo=FALSE, message=FALSE}
+MyData_rad <- data.frame(
+  crim = mean(scaled_boston$crim),
+  zn = mean(scaled_boston$zn),
+  indus = mean(scaled_boston$indus),
+  chas = scaled_boston$chas,
+  nox = mean(scaled_boston$nox),
+  rm = mean(scaled_boston$rm),
+  age = mean(scaled_boston$age),
+  dis = mean(scaled_boston$dis),
+  rad = scaled_boston$rad,
+  tax = mean(scaled_boston$tax),
+  ptratio = mean(scaled_boston$ptratio),
+  black = mean(scaled_boston$black),
+  lstat = mean(scaled_boston$lstat))
+
+boston_predicted_rad <- predict(full_model, newdata = MyData_rad, interval = "confidence")
+MyData_rad <- data.frame(MyData_rad, boston_predicted_rad)
+
+ggplot(MyData_rad, aes(x = rad, y = fit)) +
+  geom_ribbon(alpha = 0.2, aes(ymin = lwr, ymax = upr)) +
+  geom_line() + ggtitle("Complete model price prediction plot by rad") + theme_bw()
+```
+
+Now, if we consider predictors and do not take into account the factor variable, then the variable `lstat` has the largest modulus coefficient. Let's see what the prediction plot looks like for it.
+
+The plot shows a logical picture -- in homes with a higher median price, there is less population with a low status.
+
+*__Figure 7__* 
+
+```{r echo=FALSE, message=FALSE}
+MyData_lstat <- data.frame(
+  crim = mean(scaled_boston$crim),
+  zn = mean(scaled_boston$zn),
+  indus = mean(scaled_boston$indus),
+  chas = scaled_boston$chas,
+  nox = mean(scaled_boston$nox),
+  rm = mean(scaled_boston$rm),
+  age = mean(scaled_boston$age),
+  dis = mean(scaled_boston$dis),
+  rad = scaled_boston$rad,
+  tax = mean(scaled_boston$tax),
+  ptratio = mean(scaled_boston$ptratio),
+  black = mean(scaled_boston$black),
+  lstat = seq(min(scaled_boston$lstat), max(scaled_boston$lstat), length.out = 506))
+
+boston_predicted_ltat <- predict(full_model, newdata = MyData_lstat, interval = "confidence")
+MyData_lstat <- data.frame(MyData_lstat, boston_predicted_ltat)
+
+ggplot(MyData_lstat, aes(x = lstat, y = fit)) +
+  geom_ribbon(alpha = 0.2, fill = "green", aes(ymin = lwr, ymax = upr)) +
+  geom_line() + ggtitle("Complete model price prediction plot by lstat") + theme_bw()
+```
+
+# Improved model
+
+## Model selection
+
+Let's start improving the model based on standardized data. We first check the complete model for outliers using Bonferroni outlier test. Three outliers were observed, we excluded them from the dataset and built one more linear model with all predictors.
+```{r}
+outlierTest(full_model)
+scaled_boston2 <- scaled_boston[-c(369, 372, 373), ]
+
+full_2 <- lm(formula = medv ~ ., data = scaled_boston2)
+full_2_summary <- summary(full_2)
+```
+
+After removing outliers, the Adjusted R-squared has slightly increased (from 0.74 to 0.78).
+```{r echo=FALSE, message=FALSE}
+cat('R-squared:', round(full_2_summary$r.squared, 3))
+cat('Adjusted R-squared', round(full_2_summary$adj.r.squared, 3))
+cat('F-statistic:', full_2_summary$fstatistic[[1]])
+```
+
+Checking for multicollinearity needs to be done, especially since Figure 1 showed us clear correlations between some predictors. One way to test a model for multicollinearity of predictors is to use VIF (variance inflation factor).
+
+Step by step we remove redundant predictors with the highest VIF value from the model until there are no predictors with VIF > 2 left in the model.
+```{r message=FALSE}
+vif(full_2)
+
+mod_2 <- update(full_2, .~. - rad)
+vif(mod_2)
+
+mod_3 <- update(mod_2, .~. - nox)
+vif(mod_3)
+
+mod_4 <- update(mod_3, .~. - dis)
+vif(mod_4)
+
+mod_5 <- update(mod_4, .~. - indus)
+vif(mod_5)
+
+mod_6 <- update(mod_5, .~. - lstat)
+vif(mod_6)
+
+mod_7 <- update(mod_6, .~. -tax)
+vif(mod_7)
+```
+
+Next, we select predictors by significance using the backward selection algorithm. Let's try to keep only those predictors that significantly affect `medv` variable. We will use F-test as a selection criterion.
+
+Removing the predictor `zn` does not significantly affect the amount of variability explained using the model, so we remove this predictor.
+```{r message=FALSE}
+drop1(mod_7, test = "F")
+
+mod_8 <- update(mod_7, .~. - zn)
+drop1(mod_8, test = "F")
+
+mod_8_summary <- summary(mod_8)
+```
+ 
+Adjusted R-squared decreased (from 0.78 to 0.70), but we significantly simplified the model by removing several predictors and making it more understandable. 
+```{r echo=FALSE, message=FALSE}
+cat('R-squared:', round(mod_8_summary$r.squared, 3))
+cat('Adjusted R-squared', round(mod_8_summary$adj.r.squared, 3))
+cat('F-statistic:', mod_8_summary$fstatistic[[1]])
+```
+
+We used the outlier test again and looked at how the model characteristics changed after outliers were removed.
+```{r message=FALSE}
+outlierTest(mod_8)
+scaled_boston3 <- scaled_boston2[-c(366, 368, 370, 371, 365), ]
+
+mod_9 <- lm(medv ~ crim + chas + rm + age + ptratio + black, data = scaled_boston3)
+mod_9_summary <- summary(mod_9)
+```
+
+Adjusted R-squared increased again (from 0.70 to 0.76)
+```{r echo=FALSE, message=FALSE}
+cat('R-squared:', round(mod_9_summary$r.squared, 3))
+cat('Adjusted R-squared', round(mod_9_summary$adj.r.squared, 3))
+cat('F-statistic:', mod_9_summary$fstatistic[[1]])
+```
+
+## Model diagnostics
+
+We re-diagnosed the model after excluding predictors. Plots shows that, in comparison with the complete model, the amount of outliers has slightly decreased, the distribution of residuals is still normal, residual plot has not significantly changed.
+
+*__Figure 8__* 
+
+```{r echo=FALSE, message=FALSE}
+mod_9_diag <- data.frame(fortify(mod_9), scaled_boston3[, c(2, 3, 5, 8, 9, 10, 13)])
+
+
+mod_9_resid <- ggplot(data = mod_9_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red") +
+  xlab("Fitted value") + ylab("Residual") + theme_bw()
+
+boston3_threshold = 4 / nrow(scaled_boston3)
+
+mod_9_cooks <- ggplot(mod_9_diag, aes(x = 1:nrow(mod_9_diag), y = .cooksd)) + 
+  geom_bar(stat = "identity") + geom_hline(yintercept = boston3_threshold, color = "red") +
+  xlab("Row number") + ylab("Cook's distance") + ggtitle("Outliers by Cook's distance") + 
+  theme_bw()
+
+grid.arrange(mod_9_resid, mod_9_cooks, nrow = 1)
+```
+
+*__Figure 9__* 
+
+```{r echo=FALSE, message=FALSE}
+qqPlot(mod_9_diag$.stdresid, xlab ="Theoretical Quantiles", 
+       ylab = "Observed Quantiles", main = "Q-Q plot of fitted values", id=FALSE)
+```
+
+It is necessary to build plots from predictors that were not included in the model in order to check unaccounted dependencies, and.. we have such ones. This is caused by the high level of correlation of predictors (Figure 2).
+
+We see that the residuals of the model depend most clearly on `lstat` and `dis` variables, so we returned them to the model despite the collinearity.
+
+*__Figure 10__* 
+
+```{r echo=FALSE, message=FALSE}
+r_1 <- mod_9_resid + aes(x = rad)
+r_2 <- mod_9_resid + aes(x = nox)
+r_3 <- mod_9_resid + aes(x = dis)
+r_4 <- mod_9_resid + aes(x = indus)
+r_5 <- mod_9_resid + aes(x = lstat)
+r_6 <- mod_9_resid + aes(x = tax)
+r_7 <- mod_9_resid + aes(x = zn)
+
+grid.arrange(r_1, r_2, r_3, r_4, r_5, r_6, r_7, nrow = 4)
+
+mod_10 <- update(mod_9, .~. + dis + lstat)
+```
+
+
+Check again that all predictors of the current model are significant.
+```{r message=FALSE}
+drop1(mod_10, test = "F")
+```
+
+Compared to the full model, this model has been greatly simplified. Adjusted R-squared has increased and the model now explains 79% of the variability, which is a not bad value.
+
+```{r echo=FALSE, message=FALSE}
+summary(mod_10)
+```
+
+## Final diagnostics
+
+
+*__Figure 11__* 
+
+So we decided to stick with this model. It is not perfect, but the data in this dataset does not allow for a good linear model. Of course, compared to the complete model, we managed to improve it by making it simpler and improving the Adjusted R-squared value.
+
+```{r echo=FALSE, message=FALSE}
+
+mod_10_diag <- data.frame(fortify(mod_10), scaled_boston3[, c(2, 3, 5, 9, 10)])
+
+mod_10_resid <- ggplot(data = mod_10_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red") +
+  ggtitle("Residual plot for final model") + 
+  xlab("Fitted value") + ylab("Residual") + theme_bw()
+
+
+mod_10_cooks <- ggplot(mod_10_diag, aes(x = 1:nrow(mod_10_diag), y = .cooksd)) + 
+  geom_bar(stat = "identity") + geom_hline(yintercept = boston3_threshold, color = "red") +
+  xlab("Row number") + ylab("Cook's distance") + ggtitle("Outliers by Cook's distance") + 
+  theme_bw()
+
+grid.arrange(mod_10_resid, mod_10_cooks, nrow = 1)
+```
+
+*__Figure 12__* 
+
+```{r echo=FALSE, message=FALSE}
+qqPlot(mod_10_diag$.stdresid, xlab ="Theoretical Quantiles", 
+       ylab = "Observed Quantiles", main = "Q-Q plot of fitted values", id=FALSE)
+```
+
+The observational independence test performs better than the complete model, but there is still autocorrelation in the model. 
+
+```{r echo=FALSE, message=FALSE}
+mod_10_dwt <- durbinWatsonTest(mod_10)
+cat("D-W Statistic:", mod_10_dwt$dw)
+```
+
+Probably a better alternative would be to use Principal component analysis (PCA) to reduce the number of features. Also, logistic regression predictive algorithm may be a better idea for this data. 
+
+In this model, `rm` was found to be the most influential predictor. Let's build the prediction plot of median home prices for it.
+
+*__Figure 13__* 
+
+```{r echo=FALSE, message=FALSE}
+MyData_rm <- data.frame(
+  crim = mean(scaled_boston3$crim),
+  zn = mean(scaled_boston3$zn),
+  indus = mean(scaled_boston3$indus),
+  chas = scaled_boston3$chas,
+  nox = mean(scaled_boston3$nox),
+  rm = seq(min(scaled_boston3$rm), max(scaled_boston3$rm), length.out = 498),
+  age = mean(scaled_boston3$age),
+  dis = mean(scaled_boston3$dis),
+  rad = scaled_boston3$rad,
+  tax = mean(scaled_boston3$tax),
+  ptratio = mean(scaled_boston3$ptratio),
+  black = mean(scaled_boston3$black),
+  lstat = mean(scaled_boston3$lstat))
+
+boston_predicted_rm <- predict(mod_10, newdata = MyData_rm, interval = "confidence")
+MyData_rm <- data.frame(MyData_rm, boston_predicted_rm)
+
+ggplot(MyData_rm, aes(x = rm, y = fit)) +
+  geom_ribbon(alpha = 0.2, fill = "green", aes(ymin = lwr, ymax = upr)) +
+  geom_line() + ggtitle("Final model price prediction plot by rm") + theme_bw()
+```
+
+# Reply to the customer
+
+The following indicators make the largest contribution to the median home price: `rm`, `chas` and `lstat`. 
+
+Obviously, the number of rooms directly affects the median price of a home. Besides, housing costs will be higher if the house is built near to the Charles River (everyone loves a beautiful view of the river from the window) and in an area that has a lower percentage of the low-status population.
+
+All the best!
