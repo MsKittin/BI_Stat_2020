@@ -1,0 +1,407 @@
+---
+title: "Mice project"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+if (!require(readxl)) {install.packages("readxl")}
+if (!require(tidyr)) {install.packages("tidyr")}
+if (!require(dplyr)) {install.packages("dplyr")} 
+if (!require(multcomp)) {install.packages("multcomp")}
+if (!require(car)) {install.packages("car")}
+if (!require(ggplot2)) {install.packages("ggplot2")}
+if (!require(factoextra)) {install.packages("factoextra")}
+if (!require(vegan)) {install.packages("vegan")}
+if (!require('scatterplot3d')){install.packages('scatterplot3d')}
+```
+```{r include=FALSE}
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(multcomp)
+library(car)
+library(ggplot2)
+library(factoextra)
+library(vegan)
+library(rgl)
+library(scatterplot3d)
+```
+
+To read the dataset, we use the read_xls function from the readxl package.
+```{r message=FALSE, warning=FALSE, include=FALSE, r,echo=TRUE}
+mice_data <- read_xls("/home/misskittin/Downloads/Data_Cortex_Nuclear.xls")
+```
+
+## Dataset description
+The dataset contains 1080 measurements of protein expression levels in 72 mice, categorized by genotype, treatment availability, class, and behavior. The dataset contains incomplete observations - the expression level of all proteins was measured only for 552 out of 1080 observations.
+```{r message=FALSE, warning=FALSE, include=FALSE}
+glimpse(mice_data)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+cat('Number of incomplete observations: ', sum(complete.cases(mice_data)))
+```
+The variables responsible for the belonging of the mouse to a particular group were converted to a factors, and the groups were tested for balance.
+
+The **`Genotype`** variable divides mice into balanced groups: control (`Control`) and trisomy group (`Ts65Dn`).
+```{r echo=FALSE}
+table(mice_data$Genotype)
+mice_data$Genotype <- as.factor(mice_data$Genotype)
+```
+The **`Treatment`** variable divides observations into balanced groups by type of treatment. First group of mice was treaten with drug injections (`Memantine`) and the second had injections of saline (`Saline`). 
+```{r echo=FALSE}
+table(mice_data$Treatment)
+mice_data$Treatment <- as.factor(mice_data$Treatment)
+```
+The **`Behavior`** variable reflects division depending on when mice were shocked by an electric current. The context-shock group (`C/S`) was first placed in a new room for 3 minutes, and only then an electric shock was applied, and for the shock-context group (`S/C`) on the contrary. These groups are balanced.
+```{r echo=FALSE}
+table(mice_data$Behavior)
+mice_data$Behavior <- as.factor(mice_data$Behavior)
+```
+A total of 8 **`Classes`** were studied in the experiment:    
+
+* `c-CS-s`: control mice, stimulated to learn, injected with saline    
+* `c-CS-m`: control mice, stimulated to learn, injected with memantine     
+* `c-SC-s`: control mice, not stimulated to learn, injected with saline     
+* `c-SC-m`: control mice, not stimulated to learn, injected with memantine     
+* `t-CS-s`: trisomy mice, stimulated to learn, injected with saline     
+* `t-CS-m`: trisomy mice, stimulated to learn, injected with memantine     
+* `t-SC-s`: trisomy mice, not stimulated to learn, injected with saline      
+* `t-SC-m`: trisomy mice, not stimulated to learn, injected with memantine     
+
+The number of observations in different classes is unbalanced, `t-CS-s` class contains the least number:
+```{r echo=FALSE}
+table(mice_data$class)
+mice_data$class <- as.factor(mice_data$class)
+```
+
+
+## Differences in BDNF_N expresion level depending on class
+
+First of all, let's see how many missing values are in the column corresponding to this protein.    
+There are 3 such values, so we can safely exclude them from the analysis. 
+```{r echo=FALSE}
+cat('Number of missing values in BDNF_N column: ', sum(is.na(mice_data$BDNF_N)))
+mice_wo_na_BDNF_N <- mice_data %>% drop_na(BDNF_N)
+```
+Let's visualize BDNF_N expression level by classes.
+
+*__Figure 1__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(mice_wo_na_BDNF_N, aes(class, BDNF_N))+
+  ggtitle(label = "Differences in BDNF_N expression level depending on class")+
+  geom_boxplot(aes(fill=class)) +
+  labs(x = "Class", y = "BDNF_N level") + scale_fill_brewer(palette = "Dark2") + theme_bw()
+```
+
+We need to look at the conditions for the **applicability of the dispersion analysis**. 
+We build a simple linear model with one predictor and:
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+lm_BDNF_N <- lm(BDNF_N ~ class, mice_wo_na_BDNF_N)
+```
+
+1. To assess the presence of influential observations we build a graph of Cook's distances. 
+Using Cook's distance, we identified no influential observations.
+
+*__Figure 2__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mod_diag <- fortify(lm_BDNF_N)
+
+ggplot(mod_diag, aes(x = 1:nrow(mod_diag), y = .cooksd)) + 
+  geom_bar(stat = "identity") +xlab("Row number") + ylab("Cook's distance") + 
+  ggtitle("Outliers by Cook's distance") + theme_bw()
+```
+
+2. The normality of residuals distribution was checked using the qqPlot. According to the plot, the distribution is close to normal.
+
+*__Figure 3__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+qqPlot(lm_BDNF_N,  xlab ="Theoretical Quantiles", 
+ylab = "Observed Quantiles", main = "Q-Q plot of residuals distribution", id = FALSE) 
+```
+
+*__Figure 4__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(mod_diag, aes(x = class, y = .stdresid, fill = class)) + geom_boxplot() +
+  ggtitle("Residuals plot") + scale_fill_brewer(palette = "Dark2") + theme_bw()
+```
+
+ANOVA becomes more stable with equal group sizes.
+But we have already found out that there is an unequal number of observations in the classes, which, in theory, can negatively affect the results of analysis of variance. However, upper points 1 and 2 show that the ANOVA model can still be applied to answer the question about the presence of a dependence of the level of BDNF_N protein production on the class in experiment, so we use it.
+```{r echo=FALSE}
+anova_BDNF_N <- anova(lm_BDNF_N)
+anova_BDNF_N
+```
+According to the data obtained, **the level of BDNF_N protein production significantly depends on the class**.
+```{r echo=FALSE}
+cat('F-value: ', anova_BDNF_N$`F value`[1])   
+cat('P-value: ', anova_BDNF_N$`Pr(>F)`[1])
+cat('DF: ', anova_BDNF_N$`Df`[1])
+```
+ANOVA says whether a factor has an impact on the whole, but does not say which groups differ. To find out, we need to do post-hoc tests. Now we see which groups there are significant differences:
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+post_hoch <- glht(lm_BDNF_N, linfct = mcp(class = "Tukey"))
+result<-summary(post_hoch)
+result
+```
+Visualization of post-hoc results:
+
+*__Figure 5__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+MyData <- data.frame(class = factor(levels(mice_wo_na_BDNF_N$class), levels = levels(mice_wo_na_BDNF_N$class)))
+MyData <- data.frame(MyData,
+                     predict(lm_BDNF_N, newdata = MyData, interval = "confidence")
+)
+
+post_hoc_vis <- ggplot(data = MyData, aes(x = class, y = fit)) +
+  geom_bar(stat = "identity", aes(fill = class), width = 0.5) +
+  geom_errorbar(aes(ymin = lwr, ymax = upr), width = 0.1) + 
+  scale_fill_brewer(palette = "Dark2") + theme_bw() + 
+  xlab("Class") + ylab("Product level") +
+  ggtitle(label = "Differences in BDNF_N expression level depending on the class (post-hoc test)")
+post_hoc_vis
+```
+
+##  Prediction of ERBB4_N production level based on data on other proteins in the experiment
+
+To accomplish this task, let's look at a complete linear model:
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+full_lm <- lm(ERBB4_N ~ ., mice_data[, -c(1,79,80,81,82)])
+summary(full_lm)
+```
+We see NA`s in coefficients for pS6_N protein, better exclude this predictor from the model.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+new_full_lm <- update(full_lm, .~. - pS6_N)
+model_diag <- fortify(new_full_lm)
+```
+We examined a scatterplot of the residuals to evaluate model. Nonlinearity not detected. There are quite a few observations that do not lie in the +/- 2 standard deviation region. Residual plot shows funnel-shaped pattern -- no heteroscedasticity found (dispersion is constant).
+
+*__Figure 6__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+gg_resid <- ggplot(data = model_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red") +
+  ggtitle("Residual plot for model") + 
+  xlab("Fitted value") + ylab("Residual") + theme_bw()
+gg_resid
+```
+
+A rule of thumb influence threshold to determine outliers in the regression model, defined as **__It = 4 / N observations__**. Values above this threshold could be a problem.
+Using Cook's distance, we identified a considerable number of influential observations, that exceed threshold.
+
+*__Figure 7__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+threshold = 4 / nrow(mice_data)
+
+ggplot(model_diag, aes(x = 1:nrow(model_diag), y = .cooksd)) + 
+  geom_bar(stat = "identity") + geom_hline(yintercept = threshold, color = "red") +
+  xlab("Row number") + ylab("Cook's distance") + ggtitle("Outliers by Cook's distance") + 
+  theme_bw()
+```
+
+The normality of residuals distribution was checked using the qqPlot. According to the plot, the distribution is close to normal.
+
+*__Figure 8__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+qqPlot(model_diag$.stdresid, xlab ="Theoretical Quantiles", 
+       ylab = "Observed Quantiles", main = "Q-Q plot of fitted values", id=FALSE)
+```
+
+Checking for multicollinearity needs to be done. One way to test a model for multicollinearity of predictors is to use VIF (variance inflation factor). 
+```{r echo=FALSE}
+vif(new_full_lm)
+```
+The obtained VIF values for some predictors are very high, almost all significantly exceed the threshold 2. We will not try to improve this model, it will take a long time and there are too many predictors to consistently discard all whose VIF exceeds 2. This multicollinearity is understandable, because the levels of protein production are often correlated with each other. Probably a better alternative would be to use Principal component analysis (PCA) to reduce the number of features, let's check out.
+
+## PCA
+
+To perform principal component analysis, it is necessary to remove incomplete observations from the dataset.
+
+```{r echo=FALSE}
+mice_wo_na <- mice_data[complete.cases(mice_data),]
+mice_pca <- rda(mice_wo_na[, -c(1, 79, 80, 81, 82)], scale = TRUE)
+mice_pca
+```
+
+Firstly, we build biplot, which aims to represent both the observations and variables of a matrix of multivariate data on the same plot. The angles between the vectors reflect the correlations of features with each other and with the axes of the principal components.
+
+*__Figure 9__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+biplot(mice_pca, scaling = "species", display = "species")
+```
+
+On this graph, it is difficult to identify which features correlate with each other. Let's build a graph of ordination in the axes of the first two principal components to assess the similarity between observations in different groups. As we can see, clear clusters do not stand out depending on the class.
+
+*__Figure 10__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+df_scores <- data.frame(mice_wo_na,
+  scores(mice_pca, display = "sites", choices = c(1, 2, 3), scaling = "sites"))
+
+
+class_scores <- ggplot(df_scores, aes(x = PC1, y = PC2)) +  geom_point(aes(color = class), alpha = 0.5) + 
+  coord_equal(xlim = c(-1.2, 1.2), ylim = c(-1.2, 1.2)) + ggtitle(label = "Ordination graph colored by classes") + theme_bw() + scale_color_brewer(palette="Dark2")
+class_scores
+```
+
+*__Figure 11__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+tr_scores <- ggplot(df_scores, aes(x = PC1, y = PC2)) +  geom_point(aes(color = Treatment), alpha = 0.5) + 
+  coord_equal(xlim = c(-1.2, 1.2), ylim = c(-1.2, 1.2)) + ggtitle(label = "Ordination graph colored by treatment") + theme_bw() + scale_color_brewer(palette="Dark2")
+tr_scores
+```
+
+*__Figure 12__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+gt_scores <- ggplot(df_scores, aes(x = PC1, y = PC2)) +  geom_point(aes(color = Genotype), alpha = 0.5) + 
+  coord_equal(xlim = c(-1.2, 1.2), ylim = c(-1.2, 1.2)) + ggtitle(label = "Ordination graph colored by genotype") + theme_bw() + scale_color_brewer(palette="Dark2")
+gt_scores
+```
+
+We can observe a clear clustering into two groups depending on the behavior:
+
+*__Figure 13__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+bh_scores <- ggplot(df_scores, aes(x = PC1, y = PC2)) +  geom_point(aes(color = Behavior), alpha = 0.5) + 
+  coord_equal(xlim = c(-1.2, 1.2), ylim = c(-1.2, 1.2)) + ggtitle(label = "Ordination graph colored by behavior") + theme_bw() + scale_color_brewer(palette="Dark2")
+bh_scores
+```
+
+Now we need to understand how each component contributes, let's analyze this using an screeplot, which shows the proportion of total variability that can be explained by each of the components and helps to identify the most important components.
+
+*__Figure 14__* 
+
+```{r, echo = FALSE, include=TRUE}
+screeplot(mice_pca, type = "lines", bstick = TRUE)
+```
+
+The PC1 component explains the largest percentage, followed by the PC2 contribution. Now let's build a 3D graphs for the first three components:
+
+*__Figure 15__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+my_palette <- c("#1B9E77" , "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+df_scores$color <- my_palette[as.numeric(df_scores$class)]
+
+plot3d(
+    x = df_scores$PC1, df_scores$PC2, df_scores$PC3,
+    col = df_scores$color,
+    type = "p",
+    xlab = "PC1", ylab = "PC2", zlab = "PC3", main = "PCA colored by mice class") 
+rglwidget()
+```
+
+*__Figure 16__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+df_scores$color <- my_palette[as.numeric(df_scores$Treatment)]
+
+plot3d(
+    x = df_scores$PC1, df_scores$PC2, df_scores$PC3,
+    col = df_scores$color,
+    type = "p",
+    xlab = "PC1", ylab = "PC2", zlab = "PC3", main = "PCA colored by mice treatment") 
+rglwidget()
+```
+
+*__Figure 17__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+my_palette2 <- my_palette[c(2, 8)]
+df_scores$color <- my_palette2[as.numeric(df_scores$Genotype)]
+
+plot3d(
+    x = df_scores$PC1, df_scores$PC2, df_scores$PC3,
+    col = df_scores$color,
+    type = "p",
+    xlab = "PC1", ylab = "PC2", zlab = "PC3", main = "PCA colored by mice genotype") 
+rglwidget()
+```
+
+*__Figure 18__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+my_palette3 <- my_palette[c(1, 7)]
+df_scores$color <- my_palette3[as.numeric(df_scores$Behavior)]
+
+plot3d(
+    x = df_scores$PC1, df_scores$PC2, df_scores$PC3,
+    col = df_scores$color,
+    type = "p",
+    xlab = "PC1", ylab = "PC2", zlab = "PC3", main = "PCA colored by mice behavior") 
+rglwidget()
+```
+
+## Building linear model using PC
+
+Now we can try to build a linear model again, but now as predictors for predicting the production level of the ERBB4_N protein, we will use the principal components.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mice_wo_ERBB4_N <- mice_wo_na[, -c(1, 56, 79, 80, 81, 82)]
+pca_wo_ERBB4_N <- rda(mice_wo_ERBB4_N, scale = T)
+model_data <- data.frame(ERBB4_N = mice_wo_na$ERBB4_N, scores(mice_pca, display = "sites", choices = 1:14, scaling = "sites"))
+pca_lm <- lm(ERBB4_N ~ ., data = model_data)
+summary(pca_lm)
+```
+
+We examined a scatterplot of the residuals to evaluate model. Nonlinearity not detected, quite a few observations that do not lie in the +/- 2 standard deviation region, dispersion is constant.
+
+*__Figure 19__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+mod_diag <- fortify(pca_lm)
+
+gg_resid <- ggplot(data = mod_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red") +
+  ggtitle("Residual plot for model") + 
+  xlab("Fitted value") + ylab("Residual") + theme_bw()
+gg_resid
+```
+
+There are some influential observations in model data.
+
+*__Figure 20__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+threshold = 4 / nrow(mice_wo_ERBB4_N)
+
+ggplot(mod_diag, aes(x = 1:nrow(mod_diag), y = .cooksd)) + 
+  geom_bar(stat = "identity") + geom_hline(yintercept = threshold, color = "red") +
+  xlab("Row number") + ylab("Cook's distance") + ggtitle("Outliers by Cook's distance") + 
+  theme_bw()
+```
+
+The normality of residuals distribution was checked using the qqPlot. According to the plot, the distribution is close to normal.
+
+*__Figure 21__* 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+qqPlot(mod_diag$.stdresid, xlab ="Theoretical Quantiles", 
+       ylab = "Observed Quantiles", main = "Q-Q plot of fitted values", id=FALSE)
+```
+
+Model built using principal components is better than previous one and has greater Adjusted R-squared, using PCA, we solved the multicollinearity problem.
