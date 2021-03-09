@@ -1,0 +1,182 @@
+---
+title: "Survival analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(survival)
+library(dplyr)
+library(survminer)
+library(ggplot2)
+library(dplyr)
+library(ggfortify)
+library(coin)
+theme_set(theme_bw())
+```
+
+## EDA
+
+This dataset includes data about patients with ovarian cancer and related clinical information, including the time that patients were tracked until they died or were lost to follow-up, whether patients were censored or not, age of the patient, prescription of the treatment group, presence of residual disease and working performance.
+
++ `futime`:	survival or censoring time    
++ `fustat`:	censoring status (The term "censoring" refers to incomplete data)    
++ `age`:	in years     
++ `resid.ds`:	residual disease present (1=no,2=yes)    
++ `rx`:	treatment group     
++ `ecog.ps`:	ECOG performance status (1 is better, see reference)
+
+```{r include=FALSE}
+data("ovarian")
+```
+
+Data structure:
+```{r echo=FALSE}
+glimpse(ovarian)
+```
+
+There are 26 patients in dataset, who received one of two therapy regimens. All observations are complete.
+```{r echo=FALSE}
+cat('Number of incomplete observations: ', sum(!complete.cases(ovarian)))
+```
+
+We convert treatment types (`rx`) to factor with labels "A" and "B". Same with residual disease status (`resid.ds`) - 1 as "no" and 2 as "yes". ECOG performance status (`ecog.ps`) is also converted to factor.
+```{r include=FALSE}
+ovarian$resid.ds <- factor(ovarian$resid.ds, levels = c("1", "2"), labels = c("no", "yes"))
+ovarian$rx <- factor(ovarian$rx, levels = c("1", "2"), labels = c("A", "B"))
+ovarian$ecog.ps <- factor(ovarian$ecog.ps)
+```
+
+## Kaplan-Meier curves
+
+This type of curves is used in order to estimate the survival probability of a particular individual depending on the time t. First, we need to get the survival timeline - the interval in which we will assess the survival rate.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+km <- with(ovarian, Surv(futime, fustat))
+
+km_fit <- survfit(Surv(futime, fustat) ~ 1, data=ovarian)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+autoplot(km_fit)
+```
+
+Let`s stratify the curve depending on the treatment regimen that patients were assigned to. As we can see, patients treated with treatment B do better, but looks like differences not very significant, we will check it in log-rank test later.
+
+```{r echo=FALSE}
+km_rx_fit <- survfit(Surv(futime, fustat) ~ rx, data=ovarian)
+autoplot(km_rx_fit, main= "Survival depending on treatment regimen")
+```
+
+Now let's see how residual disease status affects survival. Plot shows that patients with no residual disease survive better.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+km_resid_ds_fit <- survfit(Surv(futime, fustat) ~ resid.ds, data=ovarian)
+autoplot(km_resid_ds_fit, main= "Survival depending on residual disease status")
+```
+
+Now we will assess the impact of ECOG performance status on patient survival. It is difficult to judge here the influence of the factor on survival in the middle of the study time. However, in a later perspective, patients with status "2" have a lower survival rate compared with patients with status "1".
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+km_ecog_ps_fit <- survfit(Surv(futime, fustat) ~ ecog.ps, data=ovarian)
+autoplot(km_ecog_ps_fit, main= "Survival depending on ECOG status")
+```
+
+Finally, let's assess the effect of age.
+The age variable is a continuous variable, and in order to include it as a predicted variable, we need to split the values into two groups. Taking a look at the histogram, we see that distribution is close to normal. We will use a threshold of 55 (close to mean age) as the cutoff. Thus, we get two groups of patients - under 55 and over 55 years.
+```{r echo=FALSE}
+cat('Mean age: ', mean(ovarian$age))
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+hist(ovarian$age, xlab = "age", main = "Histogram of patient age")
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ov <- mutate(ovarian, age_group = ifelse((age >=55), "over_55", "under_55"), age_group = factor(age_group))
+```
+
+According to the graph, patients under 55 have a better prognosis for survival. The probability of living a year from the beginning of observation in people over 55 is much lower.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+km_age_group_fit <- survfit(Surv(futime, fustat) ~ age_group, data=ov)
+autoplot(km_age_group_fit, main= "Survival depending on age group")
+```
+
+We can also combine two factors into one. For example, we can look at how age group factors and treatment group affect the likelihood of survival. 
+```{r message=FALSE, warning=FALSE, include=FALSE}
+ov_two_factors <- ov
+ov_two_factors$hyb_fact <- paste(ov_two_factors$age_group, ov_two_factors$rx)
+ov_two_factors$hyb_fact <- factor(ov_two_factors$hyb_fact)
+
+ov_two_factors <- ov_two_factors %>% filter(!is.na(hyb_fact))
+ov_two_factors %>%  count(hyb_fact) # samples per group
+```
+
+```{r echo=FALSE, message=FALSE}
+km_age_fit_trt <- survfit(Surv(futime, fustat) ~ hyb_fact, data=ov_two_factors)
+autoplot(km_age_fit_trt, main= "Survival depending on age group + treatment group")
+```
+
+## Comparison of groups, log-rank tests
+
+There is a single function survdiff to test for differences between 2 or more survival curves. 
+
+The survival curve by type of treatment gives the impression that patients who receive treatment B survive better than those who receive treatment A. In order to assess the reliability of this unofficial conclusion, we can perform a log rank test. 
+
+```{r echo=FALSE}
+survdiff(Surv(futime, fustat) ~ rx, data = ovarian)
+```
+
+The function logrank_test from package coin can be used to compute an exact conditional test answering the question whether the survival times differ according to treatment regimen. There is no significant differences in these groups.
+```{r echo=FALSE}
+logrank_test(Surv(futime, fustat) ~ rx, data = ovarian, 
+             distribution = "exact")
+```
+
+The same exercise can be performed for comparison in residual disease status groups. There is no significant differences in surviving in two groups.
+```{r echo=FALSE}
+logrank_test(Surv(futime, fustat) ~ resid.ds, data = ovarian, 
+             distribution = "exact")
+```
+No differences for patient with ECOG status 1 and 2.
+```{r echo=FALSE}
+logrank_test(Surv(futime, fustat) ~ ecog.ps, data = ovarian, 
+             distribution = "exact")
+```
+
+There is significant difference between patients over and under 55 years.
+```{r echo=FALSE}
+logrank_test(Surv(futime, fustat) ~ age_group, data = ov, 
+             distribution = "exact")
+```
+
+And for our multifactor variable - no differences.
+```{r echo=FALSE}
+logrank_test(Surv(futime, fustat) ~ hyb_fact, data = ov_two_factors)
+```
+
+
+## Analysis of factors influencing risk (Cox model)
+
+Fitting a Cox model follows roughly the same rules are shown for linear models with the exception that the response variable is coded as a Surv object.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+cox <- coxph(Surv(futime, fustat) ~ rx + age + resid.ds + ecog.ps , data = ovarian)
+summary(cox)
+```
+Let's visualize the model summary
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+cox_fit <- survfit(cox)
+autoplot(cox_fit)
+```
+
+Such plots allow visualization of the model and significant factors, which affect survival.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+aa_fit <- aareg(Surv(futime, fustat) ~ rx + age + resid.ds + ecog.ps , data = ovarian)
+autoplot(aa_fit)
+```
+
+Now let's build Cox proportional hazards model using the coxph function and visualize it using the ggforest. As we can see, patients who received treatment B have less death risk, than patients who received treatment A. Patients under 55 also have less risks. Residual disease variable has significant influence - patients who have status 2 ("yes") have more risk of death. And also ECOG = 2 of patients shows increased risk. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fit.coxph <- coxph(Surv(futime, fustat) ~ rx + age_group + resid.ds + ecog.ps, data = ov)
+ggforest(fit.coxph, data = ov)
+```
