@@ -1,6 +1,6 @@
 # Statistics projects in Bioinformatics institute 2020/21
 
-#### All analyses were performed using R programming language.
+All analyses were performed using R programming language.
 
 ## 1_Exploratory_data_analysis
 #### Skills:
